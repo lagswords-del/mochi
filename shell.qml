@@ -20,11 +20,16 @@ ShellRoot {
         screen: Quickshell.screens[0]
         WlrLayershell.layer: WlrLayer.Top
         WlrLayershell.namespace: "desktop-pet"
-        WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
-        exclusionMode: ExclusionMode.Ignore
+        // only takes the keyboard while the ask bar is open (middle-click Mochi)
+        WlrLayershell.keyboardFocus: askBar.open ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+        exclusionMode: ExclusionMode.Normal   // stay clear of the bar and dock (their reserved space)
         anchors { top: true; bottom: true; left: true; right: true }
         color: "transparent"
-        mask: Region { item: pet }
+        mask: Region {
+            item: pet
+            Region { item: askBar.open ? askBar : null }
+            Region { item: speech.visible ? speech : null }
+        }
 
         Item {
             id: stage
@@ -54,7 +59,9 @@ ShellRoot {
                 property bool idleNap: false   // asleep because the user is away
                 property real awakeUntil: -1   // commands keep Mochi up for a while
 
-                function sleepy() { return idle.isIdle && t > awakeUntil }
+                property bool listening: false  // the ask bar is open or Mochi is thinking
+
+                function sleepy() { return idle.isIdle && t > awakeUntil && !listening }
 
                 // pet command: walk | jump | dance | sleep | happy | idle | come
                 function command(what) {
@@ -101,6 +108,7 @@ ShellRoot {
                 function rand(a, b) { return a + Math.random() * (b - a) }
 
                 function decide() {
+                    if (listening) { enter("idle", 1); bubble = "?"; return }
                     if (sleepy()) { idleNap = true; enter("sleep"); return }
                     const r = Math.random()
                     const target = pickJump()
@@ -256,6 +264,9 @@ ShellRoot {
             IpcHandler {
                 target: "pet"
                 function act(what: string): string { return brain.command(what) }
+                // mochi ask "open firefox"  /  mochi talk (opens the ask bar)
+                function ask(text: string): string { const r = helper.handle(text); if (r) speech.show(r, 0); return r || "(thinking…)" }
+                function talk(): void { askBar.open ? askBar.closeBar() : askBar.openBar() }
                 function status(): string {
                     return brain.state + " at " + Math.round(brain.x) + "," + Math.round(brain.y)
                          + " on " + brain.surfId + " (" + (brain.surfaces.length - 1) + " floating windows)"
@@ -332,6 +343,7 @@ ShellRoot {
                     id: grab
                     anchors.fill: parent
                     cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                    acceptedButtons: Qt.LeftButton | Qt.MiddleButton
                     property point start
                     property point last
                     property real lastT
@@ -342,11 +354,13 @@ ShellRoot {
                     property var beforeSurf: null
 
                     onPressed: mouse => {
+                        if (mouse.button === Qt.MiddleButton) { askBar.open ? askBar.closeBar() : askBar.openBar(); return }
                         start = mapToItem(stage, mouse.x, mouse.y)
                         last = start; lastT = Date.now(); moved = false
                         before = brain.state; beforeSurf = brain.surfId
                     }
                     onPositionChanged: mouse => {
+                        if (!(mouse.buttons & Qt.LeftButton)) return
                         const p = mapToItem(stage, mouse.x, mouse.y)
                         if (!moved && Math.hypot(p.x - start.x, p.y - start.y) < 5) return
                         p.y = Math.min(p.y, stage.height)
@@ -359,7 +373,8 @@ ShellRoot {
                         brain.y = brain.y + (p.y - last.y)
                         last = p; lastT = now
                     }
-                    onReleased: {
+                    onReleased: mouse => {
+                        if (mouse.button === Qt.MiddleButton) return
                         if (moved) {
                             // throw!
                             brain.vx = Math.max(-1500, Math.min(1500, vX))
@@ -375,6 +390,100 @@ ShellRoot {
                     }
                 }
             }
-        }
+        
+            // ------------------------------------------- ask bar + speech ----
+            Helper {
+                id: helper
+                brain: brain
+                onReply: (text, secs) => speech.show(text, secs)
+                onThinking: (on) => { brain.listening = on || askBar.open; if (on) speech.show("…", 0) }
+            }
+
+            // the text bar: middle-click Mochi to open, Enter to send, Esc to close
+            Rectangle {
+                id: askBar
+                property bool open: false
+                function openBar() {
+                    open = true
+                    brain.listening = true; brain.awakeUntil = brain.t + 60
+                    if (brain.state === "sleep") brain.enter("wake", 0.8)
+                    else if (["walk", "dance", "idle", "happy"].indexOf(brain.state) >= 0) { brain.enter("idle", 1); brain.bubble = "?" }
+                    input.text = ""
+                    focusTimer.start()
+                }
+                function closeBar() { open = false; input.focus = false; brain.listening = helper.ai.running }
+                Timer { id: focusTimer; interval: 60; onTriggered: input.forceActiveFocus() }
+
+                width: open ? 360 : 0
+                height: open ? 44 : 0
+                visible: open
+                x: Math.max(8, Math.min(stage.width - 368, pet.x + pet.width / 2 - 180))
+                y: Math.max(8, pet.y - 58)
+                radius: 22
+                color: "#e62b2235"
+                border.width: 1.5; border.color: "#66fbeadb"
+                Text {
+                    anchors.left: parent.left; anchors.leftMargin: 18; anchors.verticalCenter: parent.verticalCenter
+                    visible: input.text === ""
+                    text: "Ask Mochi… open firefox · screenshot · search cats"
+                    color: "#99fbeadb"; font.pixelSize: 14
+                }
+                TextInput {
+                    id: input
+                    anchors.fill: parent; anchors.leftMargin: 18; anchors.rightMargin: 18
+                    verticalAlignment: TextInput.AlignVCenter
+                    color: "#fbeadb"; selectionColor: "#f4a3b4"; selectedTextColor: "#2b2235"
+                    font.pixelSize: 14
+                    clip: true
+                    Keys.onEscapePressed: askBar.closeBar()
+                    onAccepted: {
+                        const q = text
+                        askBar.closeBar()
+                        const r = helper.handle(q)
+                        if (r) { speech.show(r, 0); brain.enter("happy", 1.2) }
+                    }
+                    onActiveFocusChanged: if (!activeFocus && askBar.open) closeLater.restart()
+                }
+                // clicking somewhere else closes the bar
+                Timer { id: closeLater; interval: 250; onTriggered: if (!input.activeFocus) askBar.closeBar() }
+            }
+
+            // Mochi's speech bubble for replies (click to dismiss)
+            Rectangle {
+                id: speech
+                property string msg: ""
+                function show(t, secs) {
+                    msg = t
+                    visible = true
+                    hideTimer.interval = (secs > 0 ? secs : Math.min(12, 3 + t.length / 18)) * 1000
+                    if (t !== "…") hideTimer.restart(); else hideTimer.stop()
+                }
+                visible: false
+                width: Math.min(340, label.implicitWidth + 28)
+                height: label.implicitHeight + 20
+                x: Math.max(8, Math.min(stage.width - width - 8, pet.x + pet.width / 2 - width / 2))
+                y: Math.max(8, pet.y - height - (askBar.open ? 66 : 14))
+                radius: 16
+                color: "#f2fbeadb"
+                border.width: 2; border.color: "#2b2235"
+                Text {
+                    id: label
+                    x: 14; y: 10
+                    width: Math.min(312, implicitWidth)
+                    text: speech.msg === "…" ? ["·", "· ·", "· · ·"][Math.floor(brain.t * 3) % 3] : speech.msg
+                    wrapMode: Text.WordWrap
+                    color: "#2b2235"; font.pixelSize: 13; font.bold: true
+                    onTextChanged: width = Math.min(312, implicitWidth)
+                }
+                Rectangle {        // the little tail pointing at Mochi
+                    width: 12; height: 12; rotation: 45
+                    color: parent.color; border.width: 2; border.color: "#2b2235"
+                    x: Math.max(10, Math.min(parent.width - 22, pet.x + pet.width / 2 - parent.x - 6))
+                    y: parent.height - 7; z: -1
+                }
+                Timer { id: hideTimer; onTriggered: speech.visible = false }
+                MouseArea { anchors.fill: parent; onClicked: speech.visible = false }
+            }
+}
     }
 }

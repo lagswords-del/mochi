@@ -12,6 +12,13 @@ Only Mochi itself catches clicks. The rest of the screen works as normal.
 - **Sleeps** (z) after 2 minutes without input and wakes when you're back. Takes random naps too.
 - **Dances** (♪) sometimes while a media player is playing (anything that speaks MPRIS: Spotify, browsers, mpv…).
 - **Click** it for a happy hop (♥). **Drag** to pick it up. **Let go while moving** to throw it.
+- **Middle-click** it to open a little text bar and ask it things:
+  - **Open apps:** `open firefox`, `spotify`, `files`, `terminal`
+  - **Screenshots:** `screenshot` (pick an area), `screenshot window`, `screenshot screen`
+  - **The web:** `search cute cats`, `youtube.com`
+  - **Sound and music:** `volume 40`, `louder`, `mute`, `pause`, `next`, `what's playing`
+  - **Other:** `lock`, `time`, `date`, `settings`, and tricks like `dance`, `sleep`, `jump`
+  - **Anything else** goes to a local AI through [Ollama](https://ollama.com) (model `qwen2.5-coder:3b`, or set `AI_MODEL`), and Mochi answers in a speech bubble. Mochi starts `ollama serve` if it isn't running.
 
 ## Requirements
 
@@ -36,6 +43,8 @@ mochi            # let Mochi out (or call it over if it's already out)
 mochi stop       # send it home
 mochi status     # what it's doing and where
 mochi dance      # also: walk, jump, sleep, happy, idle, come
+mochi ask "open firefox"   # same as typing it in Mochi's text bar
+mochi talk       # open or close the text bar (bind it to a key if you like)
 ```
 
 Mochi runs detached, so closing the terminal doesn't stop it.
@@ -62,6 +71,7 @@ spawn-at-startup "sh" "-c" "~/.local/bin/mochi"
 | File | What |
 |---|---|
 | `shell.qml` | A full-screen transparent layer surface whose input mask is just the pet. The "brain" is a small state machine (fall, land, idle, walk, crouch, jump, sleep, wake, happy, dance, drag) with gravity, and jump arcs solved to land on a chosen window. Polls `niri msg --json windows` every 350 ms. |
+| `Helper.qml` | What Mochi does with what you type: commands, then the local AI. |
 | `sprites.js` | The 16×14 pixel art and palette. Frames are built from one base body plus eyes, mouth and feet patches. |
 | `PixelSprite.qml` | Draws a frame on a Canvas and repaints only when it changes. |
 | `bin/mochi` | The command-line launcher, which talks to the running pet over Quickshell IPC. |

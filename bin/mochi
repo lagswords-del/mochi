@@ -4,6 +4,8 @@
 #   mochi stop       send Mochi home
 #   mochi status     where Mochi is and what it's doing
 #   mochi <action>   walk | jump | dance | sleep | happy | idle | come
+#   mochi ask TEXT   ask Mochi something ("open firefox", "screenshot", "what is a gecko?")
+#   mochi talk       open Mochi's text bar (or middle-click Mochi)
 
 # Find the project: the folder above this script (follows the symlink in
 # ~/.local/bin), or $MOCHI_DIR, or ~/Projects/desktop-pet.
@@ -30,8 +32,14 @@ case "${1:-}" in
         else echo "Mochi isn't out."; fi ;;
     status)
         running && ipc status || echo "Mochi isn't out. Type: mochi" ;;
+    ask)
+        running || { echo "Mochi isn't out. Type: mochi"; exit 1; }
+        shift; ipc ask "$*" ;;
+    talk)
+        running || { echo "Mochi isn't out. Type: mochi"; exit 1; }
+        ipc talk >/dev/null ;;
     -h|--help|help)
-        sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' ;;
+        sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
     *)
         running || { echo "Mochi isn't out. Type: mochi"; exit 1; }
         ipc act "$1" ;;
