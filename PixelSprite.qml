@@ -6,6 +6,7 @@ Canvas {
     id: c
     property var rows: Sprites.frame({})
     property int px: 3
+    property var palette: Sprites.PALETTE
     property bool flip: false
 
     width: Sprites.W * px
@@ -19,6 +20,8 @@ Canvas {
         if (key !== drawn) { drawn = key; requestPaint() }
     }
     onFlipChanged: requestPaint()
+    onPaletteChanged: requestPaint()
+    onPxChanged: requestPaint()
 
     onPaint: {
         const ctx = getContext("2d")
@@ -26,7 +29,7 @@ Canvas {
         for (let r = 0; r < rows.length; r++) {
             const line = rows[r]
             for (let i = 0; i < line.length; i++) {
-                const col = Sprites.PALETTE[line[i]]
+                const col = c.palette[line[i]] || Sprites.PALETTE[line[i]]
                 if (!col) continue
                 const x = flip ? (Sprites.W - 1 - i) : i
                 ctx.fillStyle = col

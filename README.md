@@ -66,11 +66,31 @@ Add this to `~/.config/niri/config.kdl`:
 spawn-at-startup "sh" "-c" "~/.local/bin/mochi"
 ```
 
+## Settings
+
+Mochi reads a `mochi` section from `~/.config/rice/settings.json` and applies changes live (the rice's Settings → Mochi page writes it; without that file Mochi uses its defaults):
+
+| Key | Default | What |
+|---|---|---|
+| `colour` | `classic` | `classic`, `peach`, `mint`, `lavender`, `sky`, `lemon`, `shadow`, or `theme` (a soft version of the rice theme's accent) |
+| `size` | `3` | pixels per sprite pixel |
+| `speed` | `1.0` | walking speed |
+| `climb` | `true` | jump onto floating windows and the dock |
+| `dance` | `true` | dance to music |
+| `naps` | `sometimes` | random naps: `often`, `sometimes`, `never` |
+| `nap_after` | `120` | seconds without input before it falls asleep |
+| `ask` | `true` | middle-click opens the text bar |
+| `ai` | `true` | answer non-commands with the local AI |
+| `on_top` | `true` | above everything, even fullscreen apps (off: hides under them) |
+
+Mochi walks along the real bottom of the screen. If the rice's dock is showing, it publishes its position in `$XDG_RUNTIME_DIR/rice-dock.json` and Mochi can hop onto it.
+
 ## How it works
 
 | File | What |
 |---|---|
 | `shell.qml` | A full-screen transparent layer surface whose input mask is just the pet. The "brain" is a small state machine (fall, land, idle, walk, crouch, jump, sleep, wake, happy, dance, drag) with gravity, and jump arcs solved to land on a chosen window. Polls `niri msg --json windows` every 350 ms. |
+| `Prefs.qml` | Reads the settings above and the rice theme, live. |
 | `Helper.qml` | What Mochi does with what you type: commands, then the local AI. |
 | `sprites.js` | The 16×14 pixel art and palette. Frames are built from one base body plus eyes, mouth and feet patches. |
 | `PixelSprite.qml` | Draws a frame on a Canvas and repaints only when it changes. |

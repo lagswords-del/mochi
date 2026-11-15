@@ -18,11 +18,12 @@ ShellRoot {
     PanelWindow {
         id: win
         screen: Quickshell.screens[0]
-        WlrLayershell.layer: WlrLayer.Top
+        // in front of everything by default (also the dock); Settings → Mochi can tuck it under fullscreen apps
+        WlrLayershell.layer: Prefs.onTop ? WlrLayer.Overlay : WlrLayer.Top
         WlrLayershell.namespace: "desktop-pet"
         // only takes the keyboard while the ask bar is open (middle-click Mochi)
         WlrLayershell.keyboardFocus: askBar.open ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
-        exclusionMode: ExclusionMode.Normal   // stay clear of the bar and dock (their reserved space)
+        exclusionMode: ExclusionMode.Ignore   // the whole screen: the floor is the real bottom edge
         anchors { top: true; bottom: true; left: true; right: true }
         color: "transparent"
         mask: Region {
@@ -39,8 +40,8 @@ ShellRoot {
             QtObject {
                 id: brain
                 readonly property real gravity: 1400
-                readonly property real walkSpeed: 46
-                readonly property real halfW: 20
+                readonly property real walkSpeed: 46 * Prefs.speed
+                readonly property real halfW: Prefs.size * 7
 
                 property real x: stage.width / 2
                 property real y: stage.height
@@ -60,6 +61,7 @@ ShellRoot {
                 property real awakeUntil: -1   // commands keep Mochi up for a while
 
                 property bool listening: false  // the ask bar is open or Mochi is thinking
+                property var dockSurf: null     // the rice dock, if it's showing (from rice-dock.json)
 
                 function sleepy() { return idle.isIdle && t > awakeUntil && !listening }
 
@@ -112,13 +114,14 @@ ShellRoot {
                     if (sleepy()) { idleNap = true; enter("sleep"); return }
                     const r = Math.random()
                     const target = pickJump()
-                    if (music.playing && r < 0.35) { enter("dance", rand(4, 8)); return }
-                    if (target && r < 0.55) { jumpTarget = target; enter("crouch", 0.3); return }
+                    if (Prefs.dance && music.playing && r < 0.35) { enter("dance", rand(4, 8)); return }
+                    if (Prefs.climb && target && r < 0.55) { jumpTarget = target; enter("crouch", 0.3); return }
                     if (r < 0.80) {
                         if (Math.random() < 0.5) facing = -facing
                         enter("walk", rand(2, 6)); return
                     }
-                    if (r < 0.95) { enter("idle", rand(2, 5)); return }
+                    const napAt = Prefs.naps === "often" ? 0.85 : Prefs.naps === "never" ? 1.01 : 0.95
+                    if (r < napAt) { enter("idle", rand(2, 5)); return }
                     enter("sleep", rand(8, 16))
                 }
 
@@ -223,6 +226,7 @@ ShellRoot {
                 // called whenever niri reports new window positions
                 function updateSurfaces(list) {
                     const old = surface(surfId)
+                    if (dockSurf) list.push(dockSurf)
                     list.push(floor())
                     surfaces = list
                     if (old && old.id !== "floor") {
@@ -274,7 +278,22 @@ ShellRoot {
             }
 
             // ---------------------------------------------- the world ----
-            IdleMonitor { id: idle; timeout: 120; respectInhibitors: true }
+            IdleMonitor { id: idle; timeout: Prefs.napAfter; respectInhibitors: true }
+
+            // the rice dock publishes where its glass pill is; Mochi can stand on it
+            FileView {
+                path: Quickshell.env("XDG_RUNTIME_DIR") + "/rice-dock.json"
+                watchChanges: true
+                printErrors: false
+                onFileChanged: reload()
+                onLoaded: {
+                    try {
+                        const d = JSON.parse(text())
+                        brain.dockSurf = d.visible ? { id: "dock", x1: d.x1, x2: d.x2, y: d.y } : null
+                    } catch (e) { brain.dockSurf = null }
+                }
+                onLoadFailed: brain.dockSurf = null
+            }
 
             QtObject {
                 id: music
@@ -325,6 +344,9 @@ ShellRoot {
                 PixelSprite {
                     id: sprite
                     rows: brain.frame()
+                    px: Prefs.size
+                    palette: ({ "o": "#2b2235", "b": "#" + Prefs.body[0], "s": "#" + Prefs.body[1], "e": "#2b2235",
+                                "w": "#ffffff", "p": "#f4a3b4", "m": "#c0566b" })
                     flip: brain.facing < 0
                 }
 
@@ -354,7 +376,7 @@ ShellRoot {
                     property var beforeSurf: null
 
                     onPressed: mouse => {
-                        if (mouse.button === Qt.MiddleButton) { askBar.open ? askBar.closeBar() : askBar.openBar(); return }
+                        if (mouse.button === Qt.MiddleButton) { if (Prefs.ask) askBar.open ? askBar.closeBar() : askBar.openBar(); return }
                         start = mapToItem(stage, mouse.x, mouse.y)
                         last = start; lastT = Date.now(); moved = false
                         before = brain.state; beforeSurf = brain.surfId

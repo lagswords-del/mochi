@@ -114,7 +114,8 @@ QtObject {
         }
         if (m) return "I couldn't find an app called \"" + name + "\"."
 
-        // anything else: ask the local AI
+        // anything else: ask the local AI (if that's on in Settings → Mochi)
+        if (!Prefs.ai) return "I only know commands. Try: help"
         askAI(text)
         return ""
     }
