@@ -1,0 +1,10 @@
+# editor and OS clutter
+*.swp
+*~
+.DS_Store
+.vscode/
+.idea/
+# Qt / qmlls caches
+.qmlls.ini
+*.qmlc
+*.jsc
