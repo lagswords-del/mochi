@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+"""maze: guide Mochi through a 3D maze in the terminal.
+
+Every maze is new. Walls are drawn as raised blocks (lit tops, shaded
+fronts) with half-block pixels in true colour, and Mochi walks behind and
+in front of them.
+
+  arrows / WASD / hjkl   move
+  H                      show the way for a moment
+  R                      new maze
+  Q                      quit
+"""
+import os
+import random
+import select
+import sys
+import termios
+import time
+import tty
+from collections import deque
+
+CW, CH, WH = 8, 7, 3        # cell width, cell depth, wall height (pixels)
+FPS = 30
+
+MOCHI = [
+    ".o...o.",
+    "obo.obo",
+    "obbbbbo",
+    "obebebo",
+    "opbmbpo",
+    "osbbbso",
+    ".ossso.",
+]
+FEET = {"stand": ".o...o.", "a": ".o....o", "b": "o....o."}
+PAL = {"o": (43, 34, 53), "b": (251, 234, 219), "s": (230, 195, 168),
+       "e": (43, 34, 53), "p": (244, 163, 180), "m": (192, 86, 107)}
+
+THEMES = [
+    {"name": "Hedge Garden", "top": (118, 205, 92), "front": (58, 128, 52), "edge": (170, 235, 140),
+     "floor": (226, 208, 162), "floor2": (214, 195, 150), "trail": (240, 196, 140), "bg": (34, 52, 78)},
+    {"name": "Crystal Caves", "top": (150, 205, 255), "front": (72, 98, 190), "edge": (215, 240, 255),
+     "floor": (62, 60, 96), "floor2": (56, 54, 88), "trail": (110, 90, 160), "bg": (12, 8, 26)},
+    {"name": "Candy Castle", "top": (255, 172, 212), "front": (196, 96, 150), "edge": (255, 225, 240),
+     "floor": (255, 241, 222), "floor2": (248, 230, 210), "trail": (255, 210, 170), "bg": (90, 50, 90)},
+    {"name": "Snow Fort", "top": (246, 250, 255), "front": (160, 188, 225), "edge": (255, 255, 255),
+     "floor": (196, 218, 240), "floor2": (186, 208, 232), "trail": (230, 236, 250), "bg": (30, 44, 70)},
+    {"name": "Ember Keep", "top": (150, 136, 140), "front": (84, 70, 78), "edge": (196, 182, 186),
+     "floor": (122, 58, 44), "floor2": (112, 52, 40), "trail": (200, 110, 50), "bg": (26, 10, 12)},
+    {"name": "Sunken Ruins", "top": (120, 200, 190), "front": (50, 120, 120), "edge": (180, 240, 230),
+     "floor": (200, 196, 150), "floor2": (190, 186, 140), "trail": (230, 220, 160), "bg": (8, 36, 52)},
+]
+
+
+def mix(a, b, t):
+    return (int(a[0] + (b[0] - a[0]) * t), int(a[1] + (b[1] - a[1]) * t), int(a[2] + (b[2] - a[2]) * t))
+
+
+def dark(c, f):
+    return (int(c[0] * f), int(c[1] * f), int(c[2] * f))
+
+
+# ------------------------------------------------------------------ maze ----
+def carve(w, h, rnd):
+    """A perfect maze (recursive backtracker) on a (2w+1) x (2h+1) block grid."""
+    gw, gh = 2 * w + 1, 2 * h + 1
+    wall = [[True] * gw for _ in range(gh)]
+    stack = [(0, 0)]
+    seen = {(0, 0)}
+    wall[1][1] = False
+    while stack:
+        x, y = stack[-1]
+        nb = [(x + dx, y + dy, dx, dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+              if 0 <= x + dx < w and 0 <= y + dy < h and (x + dx, y + dy) not in seen]
+        if not nb:
+            stack.pop()
+            continue
+        nx, ny, dx, dy = rnd.choice(nb)
+        wall[2 * y + 1 + dy][2 * x + 1 + dx] = False
+        wall[2 * ny + 1][2 * nx + 1] = False
+        seen.add((nx, ny))
+        stack.append((nx, ny))
+    # knock out a few extra walls so there is more than one way round
+    for _ in range(w * h // 9):
+        r, c = rnd.randrange(1, gh - 1), rnd.randrange(1, gw - 1)
+        if wall[r][c] and ((r % 2 == 1) != (c % 2 == 1)):
+            wall[r][c] = False
+    return wall
+
+
+def path(wall, a, b):
+    gh, gw = len(wall), len(wall[0])
+    prev = {a: None}
+    q = deque([a])
+    while q:
+        cur = q.popleft()
+        if cur == b:
+            break
+        c, r = cur
+        for dc, dr in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            n = (c + dc, r + dr)
+            if 0 <= n[1] < gh and 0 <= n[0] < gw and not wall[n[1]][n[0]] and n not in prev:
+                prev[n] = cur
+                q.append(n)
+    out, cur = [], b
+    while cur is not None and cur in prev:
+        out.append(cur)
+        cur = prev[cur]
+    return out[::-1]
+
+
+# ----------------------------------------------------------------- world ----
+class World:
+    """The maze drawn once into a pixel image, with a depth buffer so Mochi
+    can be hidden behind the walls in front of it."""
+
+    def __init__(self, level, rnd):
+        self.level = level
+        self.theme = rnd.choice(THEMES)
+        w, h = 7 + 2 * level, 4 + level
+        self.wall = carve(w, h, rnd)
+        self.gh, self.gw = len(self.wall), len(self.wall[0])
+        self.start = (1, 1)
+        self.goal = (self.gw - 2, self.gh - 2)
+        self.W = self.gw * CW
+        self.H = self.gh * CH + WH
+        bg = self.theme["bg"]
+        self.img = [[bg] * self.W for _ in range(self.H)]
+        self.depth = [[-1] * self.W for _ in range(self.H)]
+        self.visited = set()
+        for r in range(self.gh):
+            for c in range(self.gw):
+                if not self.wall[r][c]:
+                    self.floor(c, r)
+            for c in range(self.gw):
+                if self.wall[r][c]:
+                    self.block(c, r)
+
+    def put(self, x, y, col, d):
+        if 0 <= y < self.H and 0 <= x < self.W and self.depth[y][x] <= d:
+            self.img[y][x] = col
+            self.depth[y][x] = d
+
+    def floor(self, c, r):
+        t = self.theme
+        x0, y0 = c * CW, r * CH + WH
+        base = t["trail"] if (c, r) in self.visited else (t["floor"] if (c + r) % 2 else t["floor2"])
+        for y in range(CH):
+            for x in range(CW):
+                col = base
+                if x == 0 and c > 0 and self.wall[r][c - 1]:
+                    col = dark(base, 0.72)          # shadow from the wall on the left
+                if y == 0 and r > 0 and self.wall[r - 1][c]:
+                    col = dark(base, 0.8)           # and from the wall behind
+                if (c, r) in self.visited and (x + y * 3 + c) % 7 == 0:
+                    col = dark(base, 0.88)          # little footprints
+                self.put(x0 + x, y0 + y, col, -1 if self.depth[y0 + y][x0 + x] < 0 else r - 0.5)
+
+    def block(self, c, r):
+        t = self.theme
+        x0, y0 = c * CW, r * CH + WH
+        # front face, darker towards the ground
+        for y in range(WH):
+            shade = 1.0 - 0.35 * y / (WH - 1)
+            for x in range(CW):
+                col = dark(t["front"], shade * (0.85 if x == CW - 1 else 1.0))
+                if (x + (y // 2) * 4) % 8 == 0 and y % 2 == 0:
+                    col = dark(col, 0.85)           # brick joints
+                self.put(x0 + x, y0 + CH - WH + y, col, r)
+        # top face, lit, with a bright rim on open edges
+        for y in range(CH):
+            for x in range(CW):
+                col = t["top"]
+                if (y == 0 and (r == 0 or not self.wall[r - 1][c])) or \
+                   (x == 0 and (c == 0 or not self.wall[r][c - 1])):
+                    col = t["edge"]
+                elif (x == CW - 1 and (c == self.gw - 1 or not self.wall[r][c + 1])):
+                    col = dark(t["top"], 0.86)
+                self.put(x0 + x, y0 - WH + y, col, r)
+
+    def visit(self, c, r):
+        if (c, r) in self.visited or (c, r) == self.goal:
+            return
+        self.visited.add((c, r))
+        self.floor(c, r)
+
+
+# ------------------------------------------------------------- terminal ----
+class Screen:
+    def __init__(self):
+        self.true = os.environ.get("COLORTERM", "") in ("truecolor", "24bit") or "kitty" in os.environ.get("TERM", "")
+        self.out = sys.stdout
+
+    def fg(self, c):
+        if self.true:
+            return "\x1b[38;2;%d;%d;%dm" % c
+        return "\x1b[38;5;%dm" % self.c256(c)
+
+    def bg(self, c):
+        if self.true:
+            return "\x1b[48;2;%d;%d;%dm" % c
+        return "\x1b[48;5;%dm" % self.c256(c)
+
+    @staticmethod
+    def c256(c):
+        return 16 + 36 * round(c[0] / 255 * 5) + 6 * round(c[1] / 255 * 5) + round(c[2] / 255 * 5)
+
+    def draw(self, fb, cols, top, bottom):
+        parts = ["\x1b[H", top]
+        lastf = lastb = None
+        for y in range(0, len(fb) - 1, 2):
+            a, b = fb[y], fb[y + 1]
+            parts.append("\x1b[%dH" % (y // 2 + 2))
+            for x in range(cols):
+                t, u = a[x], b[x]
+                if t != lastf:
+                    parts.append(self.fg(t)); lastf = t
+                if u != lastb:
+                    parts.append(self.bg(u)); lastb = u
+                parts.append("▀")
+        parts.append("\x1b[0m\x1b[%dH" % (len(fb) // 2 + 2))
+        parts.append(bottom)
+        self.out.write("".join(parts))
+        self.out.flush()
+
+
+def read_keys(fd):
+    keys = []
+    while select.select([fd], [], [], 0)[0]:
+        data = os.read(fd, 64).decode("utf-8", "ignore")
+        i = 0
+        while i < len(data):
+            ch = data[i]
+            if ch == "\x1b" and i + 2 < len(data) and data[i + 1] in "[O":
+                keys.append({"A": "up", "B": "down", "C": "right", "D": "left"}.get(data[i + 2], ""))
+                i += 3
+                continue
+            keys.append({"w": "up", "k": "up", "s": "down", "j": "down", "a": "left", "h": "left",
+                         "d": "right", "l": "right", "q": "quit", "\x03": "quit", "\x1b": "quit",
+                         "r": "new", "?": "hint", "H": "hint", "n": "next", " ": "next", "\r": "next"}
+                        .get(ch.lower() if ch not in "H" else ch, "any"))
+            i += 1
+    return [k for k in keys if k]
+
+
+def hud(scr, cols, left, right, col=(255, 241, 214), back=(43, 34, 53)):
+    pad = max(1, cols - len(left) - len(right))
+    text = (left + " " * pad + right)[:cols]
+    return scr.bg(back) + scr.fg(col) + "\x1b[1m" + text + "\x1b[0m"
+
+
+# ------------------------------------------------------------------ game ----
+def main():
+    fd = sys.stdin.fileno()
+    if not os.isatty(fd):
+        print("maze needs a terminal.")
+        return
+    old = termios.tcgetattr(fd)
+    scr = Screen()
+    rnd = random.Random()
+    out = sys.stdout
+    out.write("\x1b[?1049h\x1b[?25l\x1b[2J")
+    tty.setcbreak(fd)
+    try:
+        play(fd, scr, rnd)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        out.write("\x1b[0m\x1b[?25h\x1b[?1049l")
+        out.flush()
+
+
+def play(fd, scr, rnd):
+    level = 1
+    total_moves = 0
+    while True:
+        res = run_level(fd, scr, rnd, level)
+        if res == "quit":
+            break
+        if res == "won":
+            level += 1
+        total_moves += 0
+
+
+def run_level(fd, scr, rnd, level):
+    w = World(level, rnd)
+    t = w.theme
+    pos = list(w.start)            # cell Mochi is in (or moving to)
+    frm = list(w.start)
+    move_t = 1.0                   # 0..1 progress of the current step
+    queued = None
+    facing = 1
+    moves = 0
+    hints = 0
+    hint_until = 0.0
+    hint_path = []
+    started = time.time()
+    won_at = None
+    cam = None
+    frame = 0
+    blink_at = time.time() + 2.5
+    w.visit(*pos)
+
+    while True:
+        now = time.time()
+        frame += 1
+        for k in read_keys(fd):
+            if k == "quit":
+                return "quit"
+            if won_at:
+                if now - won_at > 0.6:
+                    return "won"
+                continue
+            if k == "new":
+                return "new"
+            if k == "hint":
+                hints += 1
+                hint_path = path(w.wall, tuple(pos), w.goal)
+                hint_until = now + 2.5
+            elif k in ("up", "down", "left", "right"):
+                queued = k
+
+        # start the next step when the last one is done
+        if move_t >= 1.0 and queued and not won_at:
+            dc, dr = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}[queued]
+            queued = None
+            nc, nr = pos[0] + dc, pos[1] + dr
+            if dc:
+                facing = dc
+            if not w.wall[nr][nc]:
+                frm = pos[:]
+                pos = [nc, nr]
+                move_t = 0.0
+                moves += 1
+        if move_t < 1.0:
+            move_t = min(1.0, move_t + 0.34)
+            if move_t >= 1.0:
+                w.visit(*pos)
+                if tuple(pos) == w.goal and not won_at:
+                    won_at = now
+
+        # ------------------------------------------------------- draw ----
+        cols, rows = os.get_terminal_size()
+        if cols < 40 or rows < 14:
+            out = sys.stdout
+            out.write("\x1b[2J\x1b[H\x1b[0mMake the terminal a bit bigger (40 x 14).")
+            out.flush()
+            time.sleep(0.2)
+            continue
+        fh = (rows - 2) * 2
+        mx = (frm[0] + (pos[0] - frm[0]) * move_t) * CW + (CW - 7) / 2
+        my = (frm[1] + (pos[1] - frm[1]) * move_t) * CH + WH + CH - WH - 8   # feet just above the next wall
+        hop = -2 * 4 * move_t * (1 - move_t) * 2 if move_t < 1 else 0
+        if won_at:
+            hop = -abs(int(((now - won_at) * 8) % 4) - 2) * 2
+        # the camera follows Mochi, and centres small mazes
+        tx = (w.W - cols) / 2 if w.W <= cols else min(max(0, mx - cols / 2), w.W - cols)
+        ty = (w.H - fh) / 2 if w.H <= fh else min(max(0, my - fh / 2), w.H - fh)
+        cam = [tx, ty] if cam is None else [cam[0] + (tx - cam[0]) * 0.25, cam[1] + (ty - cam[1]) * 0.25]
+        cx, cy = int(round(cam[0])), int(round(cam[1]))
+
+        bgc = t["bg"]
+        fb = []
+        for sy in range(fh):
+            wy = sy + cy
+            if 0 <= wy < w.H:
+                row = w.img[wy]
+                if cx >= 0 and cx + cols <= w.W:
+                    fb.append(row[cx:cx + cols])
+                else:
+                    line = [bgc] * cols
+                    for sx in range(cols):
+                        wx = sx + cx
+                        if 0 <= wx < w.W:
+                            line[sx] = row[wx]
+                    fb.append(line)
+            else:
+                fb.append([bgc] * cols)
+
+        def plot(x, y, col, d):
+            sx, sy = int(x) - cx, int(y) - cy
+            if 0 <= sx < cols and 0 <= sy < fh:
+                wx, wy = int(x), int(y)
+                if 0 <= wy < w.H and 0 <= wx < w.W and w.depth[wy][wx] > d:
+                    # a wall in front: show Mochi through it, faintly
+                    fb[sy][sx] = mix(fb[sy][sx], col, 0.35)
+                else:
+                    fb[sy][sx] = col
+
+        # the way out, for a moment
+        if now < hint_until:
+            for i, (c, r) in enumerate(hint_path[1:-1]):
+                if (frame // 2 + i) % 6 < 4:
+                    plot(c * CW + CW // 2, r * CH + WH + 1, (255, 226, 122), r)
+                    plot(c * CW + CW // 2 - 1, r * CH + WH + 1, (255, 226, 122), r)
+
+        # the goal: a waving flag on a glowing star
+        gc, gr = w.goal
+        gx, gy = gc * CW, gr * CH + WH
+        glow = 0.5 + 0.5 * ((frame // 3) % 2)
+        for y in range(CH - WH):
+            for x in range(CW):
+                if abs(x - 3.5) + abs(y - 1.5) * 1.6 < 3.6:
+                    plot(gx + x, gy + y, mix((255, 196, 61), (255, 246, 200), glow * (1 - (abs(x - 3.5) + abs(y - 1.5)) / 5)), gr - 0.5)
+        for y in range(9):
+            plot(gx + 3, gy + 2 - y, (90, 60, 40), gr)
+        wave = (frame // 4) % 2
+        for y in range(3):
+            for x in range(4):
+                plot(gx + 4 + x, gy - 6 + y + (wave if x > 1 else 0), (255, 91, 91) if y != 1 else (255, 140, 120), gr)
+
+        # Mochi
+        depth_row = max(frm[1], pos[1])
+        blink = now > blink_at
+        if now > blink_at + 0.15:
+            blink_at = now + 2 + rnd.random() * 3
+        happy = bool(won_at)
+        feet = FEET["stand"] if move_t >= 1 else (FEET["a"] if move_t < 0.5 else FEET["b"])
+        sprite = MOCHI + [feet]
+        # shadow on the floor
+        for x in range(1, 6):
+            sx = mx + x
+            plot(sx, my + 7, dark(fb[min(fh - 1, max(0, int(my + 7) - cy))][min(cols - 1, max(0, int(sx) - cx))], 0.7), depth_row - 0.4)
+        for r_, line in enumerate(sprite):
+            for c_, ch in enumerate(line):
+                if ch == ".":
+                    continue
+                if ch == "e" and (blink or happy):
+                    ch = "b" if r_ == 3 else ch
+                col = PAL[ch]
+                x = mx + (c_ if facing > 0 else 6 - c_)
+                plot(x, my + r_ + hop, col, depth_row)
+        if happy:
+            # little hearts and sparkles
+            for i in range(6):
+                a = (now - won_at) * 3 + i
+                plot(mx + 3 + 10 * ((i * 37 % 11) / 11 - 0.5) * 2, my - 4 - ((a * 4) % 10), [(255, 107, 138), (255, 226, 122), (140, 220, 255)][i % 3], depth_row)
+
+        # -------------------------------------------------------- HUD ----
+        secs = int((won_at or now) - started)
+        left = " MAZE · %s · Level %d · moves %d · %d:%02d" % (t["name"], level, moves, secs // 60, secs % 60)
+        top = hud(scr, cols, left, "Q quit ")
+        if won_at:
+            bottom = hud(scr, cols, " Mochi made it out! %d moves in %d:%02d%s. Press any key for level %d."
+                         % (moves, secs // 60, secs % 60, (", %d hint%s" % (hints, "" if hints == 1 else "s")) if hints else "", level + 1),
+                         "", col=(43, 34, 53), back=(255, 207, 74))
+        else:
+            bottom = hud(scr, cols, " ←↑→↓ / WASD move · H show the way · R new maze", "find the flag ", col=(201, 191, 224), back=(29, 21, 48))
+        scr.draw(fb, cols, top, bottom)
+
+        time.sleep(1 / FPS)
+
+
+if __name__ == "__main__":
+    main()

@@ -40,6 +40,15 @@ mochi dance      # also: walk, jump, sleep, happy, idle, come
 
 Mochi runs detached, so closing the terminal doesn't stop it.
 
+### Maze
+
+```bash
+ln -sf ~/Projects/desktop-pet/bin/maze ~/.local/bin/maze
+maze
+```
+
+Guide Mochi through a 3D maze drawn right in the terminal. Every maze and theme (Hedge Garden, Crystal Caves, Candy Castle, Snow Fort, Ember Keep, Sunken Ruins) is new, and each level is bigger. Arrows, WASD or hjkl to move, H to show the way for a moment, R for a new maze, Q to quit. Needs only Python 3 and a terminal with true colour (kitty, foot, alacritty, wezterm, Konsole…). Larger mazes scroll with Mochi.
+
 ### Start at login (niri)
 
 Add this to `~/.config/niri/config.kdl`:
@@ -56,6 +65,7 @@ spawn-at-startup "sh" "-c" "~/.local/bin/mochi"
 | `sprites.js` | The 16×14 pixel art and palette. Frames are built from one base body plus eyes, mouth and feet patches. |
 | `PixelSprite.qml` | Draws a frame on a Canvas and repaints only when it changes. |
 | `bin/mochi` | The command-line launcher, which talks to the running pet over Quickshell IPC. |
+| `bin/maze` | The terminal maze game (Python, no extra packages). |
 
 Raw IPC, if you'd rather skip the launcher:
 
