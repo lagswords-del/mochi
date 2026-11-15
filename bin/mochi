@@ -1,0 +1,38 @@
+#!/bin/sh
+# mochi: start the desktop pet, or tell it what to do.
+#   mochi            start Mochi (or call it over if it's already out)
+#   mochi stop       send Mochi home
+#   mochi status     where Mochi is and what it's doing
+#   mochi <action>   walk | jump | dance | sleep | happy | idle | come
+
+# Find the project: the folder above this script (follows the symlink in
+# ~/.local/bin), or $MOCHI_DIR, or ~/Projects/desktop-pet.
+here=$(dirname "$(readlink -f "$0")")
+if [ -n "$MOCHI_DIR" ]; then PET="$MOCHI_DIR"
+elif [ -f "$here/../shell.qml" ]; then PET=$(cd "$here/.." && pwd)
+else PET="$HOME/Projects/desktop-pet"; fi
+
+command -v qs >/dev/null 2>&1 || { echo "Mochi needs Quickshell (the 'qs' command). Install it first."; exit 1; }
+
+ipc() { qs -p "$PET" ipc call pet "$@" 2>/dev/null; }
+running() { pgrep -f "^qs -p $PET" >/dev/null 2>&1; }
+
+case "${1:-}" in
+    "")
+        if running; then
+            ipc act come >/dev/null && echo "Mochi is already out. Calling it over!"
+        else
+            setsid -f qs -p "$PET" --no-duplicate >/dev/null 2>&1
+            echo "Mochi is out! (mochi stop to send it home)"
+        fi ;;
+    stop)
+        if running; then pkill -f "^qs -p $PET"; echo "Mochi went home. Bye!"
+        else echo "Mochi isn't out."; fi ;;
+    status)
+        running && ipc status || echo "Mochi isn't out. Type: mochi" ;;
+    -h|--help|help)
+        sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *)
+        running || { echo "Mochi isn't out. Type: mochi"; exit 1; }
+        ipc act "$1" ;;
+esac
